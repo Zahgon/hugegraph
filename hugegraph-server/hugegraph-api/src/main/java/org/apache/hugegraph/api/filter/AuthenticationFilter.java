@@ -20,6 +20,7 @@ package org.apache.hugegraph.api.filter;
 import static org.apache.hugegraph.config.ServerOptions.WHITE_IP_STATUS;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.HashMap;
 import java.util.List;
@@ -35,11 +36,10 @@ import org.apache.hugegraph.auth.HugeGraphAuthProxy;
 import org.apache.hugegraph.auth.RolePermission;
 import org.apache.hugegraph.config.HugeConfig;
 import org.apache.hugegraph.core.GraphManager;
+import org.apache.hugegraph.server.rest.RestRequestContext;
 import org.apache.hugegraph.util.E;
 import org.apache.hugegraph.util.Log;
 import org.apache.tinkerpop.gremlin.server.auth.AuthenticationException;
-import org.glassfish.grizzly.http.server.Request;
-import org.glassfish.grizzly.utils.Charsets;
 import org.gridkit.jvmtool.cmd.AntPathMatcher;
 import org.slf4j.Logger;
 
@@ -88,9 +88,6 @@ public class AuthenticationFilter implements ContainerRequestFilter, ContainerRe
 
     @Context
     private jakarta.inject.Provider<GraphManager> managerProvider;
-
-    @Context
-    private jakarta.inject.Provider<Request> requestProvider;
 
     @Context
     private jakarta.inject.Provider<HugeConfig> configProvider;
@@ -142,7 +139,7 @@ public class AuthenticationFilter implements ContainerRequestFilter, ContainerRe
         }
 
         // Get peer info
-        Request request = this.requestProvider.get();
+        RestRequestContext.PeerInfo request = peerOf(context);
         String peer = null;
         String path = null;
         if (request != null) {
@@ -180,7 +177,8 @@ public class AuthenticationFilter implements ContainerRequestFilter, ContainerRe
 
         if (auth.startsWith(BASIC_AUTH_PREFIX)) {
             auth = auth.substring(BASIC_AUTH_PREFIX.length());
-            auth = new String(DatatypeConverter.parseBase64Binary(auth), Charsets.ASCII_CHARSET);
+            auth = new String(DatatypeConverter.parseBase64Binary(auth),
+                              StandardCharsets.US_ASCII);
             String[] values = auth.split(":");
             if (values.length != 2) {
                 throw new BadRequestException("Invalid syntax for username and password");
@@ -211,6 +209,11 @@ public class AuthenticationFilter implements ContainerRequestFilter, ContainerRe
         } catch (AuthenticationException e) {
             throw new NotAuthorizedException("Authentication failed", e.getMessage());
         }
+    }
+
+    private static RestRequestContext.PeerInfo peerOf(ContainerRequestContext context) {
+        return context instanceof RestRequestContext ?
+               ((RestRequestContext) context).peer() : null;
     }
 
     public static class Authorizer implements SecurityContext {

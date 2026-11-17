@@ -32,7 +32,7 @@ import org.apache.hugegraph.config.HugeConfig;
 import org.apache.hugegraph.config.ServerOptions;
 import org.apache.hugegraph.exception.HugeGremlinException;
 import org.apache.hugegraph.exception.NotFoundException;
-import org.glassfish.hk2.api.MultiException;
+import org.apache.hugegraph.server.rest.ReportedThrowable;
 
 import com.codahale.metrics.annotation.Timed;
 import com.google.common.collect.ImmutableMap;
@@ -221,10 +221,6 @@ public class ExceptionFilter {
 
         @Override
         public Response toResponse(Throwable exception) {
-            if (exception instanceof MultiException &&
-                ((MultiException) exception).getErrors().size() == 1) {
-                exception = ((MultiException) exception).getErrors().get(0);
-            }
             return Response.status(INTERNAL_SERVER_ERROR)
                            .type(MediaType.APPLICATION_JSON)
                            .entity(formatException(exception, this.trace()))
@@ -233,7 +229,13 @@ public class ExceptionFilter {
     }
 
     public static String formatException(Throwable exception, boolean trace) {
-        String clazz = exception.getClass().toString();
+        /*
+         * A failure the serving layer raised reports the name the serving layer gives it,
+         * which is what a client reads, rather than the name of the class that carries it.
+         */
+        String clazz = exception instanceof ReportedThrowable ?
+                       "class " + ((ReportedThrowable) exception).reportedName() :
+                       exception.getClass().toString();
         String message = exception.getMessage() != null ?
                          exception.getMessage() : "";
         String cause = exception.getCause() != null ?

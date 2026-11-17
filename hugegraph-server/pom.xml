@@ -46,6 +46,8 @@
         <commons.io.version>2.7</commons.io.version>
         <guava.version>25.1-jre</guava.version>
         <httpclient.version>4.5.13</httpclient.version>
+        <helidon.version>2.6.14</helidon.version>
+        <jakarta.rs.version>3.0.0</jakarta.rs.version>
         <jersey.version>3.0.3</jersey.version>
         <metrics.version>4.2.4</metrics.version>
         <javassist.version>3.21.0-GA</javassist.version>
@@ -184,26 +186,18 @@
                 <version>${httpclient.version}</version>
             </dependency>
 
-            <!-- jersey -->
+            <!-- jersey: only the test framework the test module runs its own client
+                 against is managed here now; hugegraph-core and hugegraph-palo pin the
+                 same version for clients of their own -->
             <dependency>
-                <groupId>org.glassfish.jersey.core</groupId>
-                <artifactId>jersey-server</artifactId>
-                <version>${jersey.version}</version>
+                <groupId>io.helidon.webserver</groupId>
+                <artifactId>helidon-webserver</artifactId>
+                <version>${helidon.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.glassfish.jersey.containers</groupId>
-                <artifactId>jersey-container-grizzly2-http</artifactId>
-                <version>${jersey.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.glassfish.jersey.containers</groupId>
-                <artifactId>jersey-container-grizzly2-servlet</artifactId>
-                <version>${jersey.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.glassfish.jersey.media</groupId>
-                <artifactId>jersey-media-json-jackson</artifactId>
-                <version>${jersey.version}</version>
+                <groupId>jakarta.ws.rs</groupId>
+                <artifactId>jakarta.ws.rs-api</artifactId>
+                <version>${jakarta.rs.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.glassfish.jersey.test-framework.providers</groupId>
@@ -219,7 +213,12 @@
             </dependency>
             <dependency>
                 <groupId>io.dropwizard.metrics</groupId>
-                <artifactId>metrics-jersey3</artifactId>
+                <artifactId>metrics-annotation</artifactId>
+                <version>${metrics.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.dropwizard.metrics</groupId>
+                <artifactId>metrics-core</artifactId>
                 <version>${metrics.version}</version>
             </dependency>
 

@@ -22,9 +22,13 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -34,16 +38,9 @@ import org.apache.hugegraph.core.GraphManager;
 import org.apache.hugegraph.masterelection.GlobalMasterInfo;
 import org.apache.hugegraph.util.E;
 import org.apache.hugegraph.util.Log;
-import org.glassfish.hk2.api.IterableProvider;
-import org.glassfish.hk2.api.ServiceHandle;
-import org.glassfish.jersey.message.internal.HeaderUtils;
 import org.slf4j.Logger;
 
 import jakarta.ws.rs.NameBinding;
-import jakarta.ws.rs.client.Client;
-import jakarta.ws.rs.client.ClientBuilder;
-import jakarta.ws.rs.client.Entity;
-import jakarta.ws.rs.client.Invocation;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import jakarta.ws.rs.core.Context;
@@ -56,10 +53,17 @@ public class RedirectFilter implements ContainerRequestFilter {
 
     private static final String X_HG_REDIRECT = "x-hg-redirect";
 
-    private static volatile Client client = null;
+    /**
+     * Headers a forwarded request may not repeat, because the client that sends it on sets them
+     * from the body it writes.
+     */
+    private static final Set<String> SET_BY_SENDER = Set.of("connection", "content-length",
+                                                            "expect", "host", "upgrade");
+
+    private static volatile HttpClient client = null;
 
     @Context
-    private IterableProvider<GraphManager> managerProvider;
+    private jakarta.inject.Provider<GraphManager> managerProvider;
 
     private static final Set<String> MUST_BE_NULL = new HashSet<>();
 
@@ -72,9 +76,7 @@ public class RedirectFilter implements ContainerRequestFilter {
 
     @Override
     public void filter(ContainerRequestContext context) throws IOException {
-        ServiceHandle<GraphManager> handle = this.managerProvider.getHandle();
-        E.checkState(handle != null, "Context GraphManager is absent");
-        GraphManager manager = handle.getService();
+        GraphManager manager = this.managerProvider.get();
         E.checkState(manager != null, "Context GraphManager is absent");
 
         String redirectTag = context.getHeaderString(X_HG_REDIRECT);
@@ -112,27 +114,42 @@ public class RedirectFilter implements ContainerRequestFilter {
     }
 
     private Response forwardRequest(ContainerRequestContext requestContext, URI redirectUri) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(redirectUri);
         MultivaluedMap<String, String> headers = requestContext.getHeaders();
-        MultivaluedMap<String, Object> newHeaders = HeaderUtils.createOutbound();
         if (headers != null) {
             for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                if (SET_BY_SENDER.contains(entry.getKey().toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
                 for (String value : entry.getValue()) {
-                    newHeaders.add(entry.getKey(), value);
+                    builder.header(entry.getKey(), value);
                 }
             }
         }
-        newHeaders.add(X_HG_REDIRECT, new Date().getTime());
-        Invocation.Builder builder = client.target(redirectUri)
-                                           .request()
-                                           .headers(newHeaders);
-        Response response;
-        if (MUST_BE_NULL.contains(requestContext.getMethod())) {
-            response = builder.method(requestContext.getMethod());
+        builder.header(X_HG_REDIRECT, String.valueOf(new Date().getTime()));
+        String method = requestContext.getMethod();
+        if (MUST_BE_NULL.contains(method)) {
+            builder.method(method, HttpRequest.BodyPublishers.noBody());
         } else {
-            response = builder.method(requestContext.getMethod(),
-                                      Entity.json(requestContext.getEntityStream()));
+            builder.method(method, HttpRequest.BodyPublishers.ofInputStream(
+                    requestContext::getEntityStream));
         }
-        return response;
+        try {
+            HttpResponse<byte[]> answer = client.send(builder.build(),
+                                                      HttpResponse.BodyHandlers.ofByteArray());
+            Response.ResponseBuilder forwarded = Response.status(answer.statusCode());
+            answer.headers().map().forEach((name, values) -> {
+                if (!SET_BY_SENDER.contains(name.toLowerCase(Locale.ROOT))) {
+                    values.forEach(value -> forwarded.header(name, value));
+                }
+            });
+            return forwarded.entity(answer.body()).build();
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to forward the request", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while forwarding the request", e);
+        }
     }
 
     private void initClientIfNeeded() {
@@ -144,7 +161,7 @@ public class RedirectFilter implements ContainerRequestFilter {
             if (client != null) {
                 return;
             }
-            client = ClientBuilder.newClient();
+            client = HttpClient.newHttpClient();
         }
     }
 

@@ -27,15 +27,12 @@ import java.util.TreeSet;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hugegraph.config.HugeConfig;
 import org.apache.hugegraph.config.ServerOptions;
+import org.apache.hugegraph.server.rest.ResourceModel;
 import org.apache.hugegraph.util.E;
 import org.apache.hugegraph.util.InsertionOrderUtil;
 import org.apache.hugegraph.util.JsonUtil;
 import org.apache.hugegraph.version.CoreVersion;
 import org.apache.tinkerpop.shaded.jackson.annotation.JsonProperty;
-import org.glassfish.jersey.model.Parameter.Source;
-import org.glassfish.jersey.server.model.Parameter;
-import org.glassfish.jersey.server.model.Resource;
-import org.glassfish.jersey.server.model.ResourceMethod;
 
 import com.codahale.metrics.annotation.Timed;
 
@@ -44,7 +41,6 @@ import jakarta.inject.Singleton;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
-import jakarta.ws.rs.core.Application;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 
@@ -64,7 +60,7 @@ public class ProfileAPI {
     @GET
     @Timed
     @Produces(MediaType.APPLICATION_JSON)
-    public String getProfile(@Context HugeConfig conf, @Context Application application) {
+    public String getProfile(@Context HugeConfig conf, @Context ResourceModel model) {
         // May init multi times by multi threads, but no effect on the results
         if (SERVER_PROFILES != null) {
             return SERVER_PROFILES;
@@ -77,12 +73,8 @@ public class ProfileAPI {
         profiles.put("api_doc", API_DOC);
         profiles.put("swagger_ui", conf.get(ServerOptions.REST_SERVER_URL) + SWAGGER_UI);
         Set<String> apis = new TreeSet<>();
-        for (Class<?> clazz : application.getClasses()) {
-            if (!isAnnotatedPathClass(clazz)) {
-                continue;
-            }
-            Resource resource = Resource.from(clazz);
-            APICategory apiCategory = APICategory.parse(resource.getName());
+        for (ResourceModel.RootResource resource : model.resources()) {
+            APICategory apiCategory = APICategory.parse(resource.handler().getName());
             apis.add(apiCategory.dir);
         }
         profiles.put("apis", apis);
@@ -94,49 +86,30 @@ public class ProfileAPI {
     @Path("apis")
     @Timed
     @Produces(MediaType.APPLICATION_JSON)
-    public String showAllAPIs(@Context Application application) {
+    public String showAllAPIs(@Context ResourceModel model) {
         if (API_PROFILES != null) {
             return API_PROFILES;
         }
 
         APIProfiles apiProfiles = new APIProfiles();
-        for (Class<?> clazz : application.getClasses()) {
-            if (!isAnnotatedPathClass(clazz)) {
-                continue;
-            }
+        for (ResourceModel.RootResource resource : model.resources()) {
+            APICategory apiCategory = APICategory.parse(resource.handler().getName());
 
-            Resource resource = Resource.from(clazz);
-            APICategory apiCategory = APICategory.parse(resource.getName());
-
-            String url = resource.getPath();
+            String url = resource.path();
             // List all methods of this resource
-            for (ResourceMethod rm : resource.getResourceMethods()) {
-                APIProfile profile = APIProfile.parse(url, rm);
-                apiProfiles.put(apiCategory, profile);
+            for (ResourceModel.MethodModel rm : resource.methods()) {
+                apiProfiles.put(apiCategory, APIProfile.parse(url, rm));
             }
             // List all methods of this resource's child resources
-            for (Resource childResource : resource.getChildResources()) {
-                String childUrl = url + "/" + childResource.getPath();
-                for (ResourceMethod rm : childResource.getResourceMethods()) {
-                    APIProfile profile = APIProfile.parse(childUrl, rm);
-                    apiProfiles.put(apiCategory, profile);
+            for (ResourceModel.ChildResource child : resource.children()) {
+                String childUrl = url + "/" + child.path();
+                for (ResourceModel.MethodModel rm : child.methods()) {
+                    apiProfiles.put(apiCategory, APIProfile.parse(childUrl, rm));
                 }
             }
         }
         API_PROFILES = JsonUtil.toJson(apiProfiles);
         return API_PROFILES;
-    }
-
-    private static boolean isAnnotatedPathClass(Class<?> clazz) {
-        if (clazz.isAnnotationPresent(Path.class)) {
-            return true;
-        }
-        for (Class<?> i : clazz.getInterfaces()) {
-            if (i.isAnnotationPresent(Path.class)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static class APIProfiles {
@@ -175,17 +148,17 @@ public class ProfileAPI {
             this.parameters = parameters;
         }
 
-        public static APIProfile parse(String url, ResourceMethod resource) {
-            String method = resource.getHttpMethod();
+        public static APIProfile parse(String url, ResourceModel.MethodModel resource) {
+            String method = resource.httpMethod();
             List<ParamInfo> params = new ArrayList<>();
-            for (Parameter param : resource.getInvocable().getParameters()) {
-                if (param.getSource() == Source.QUERY) {
-                    String name = param.getSourceName();
-                    String type = param.getType().getTypeName();
-                    String defaultValue = param.getDefaultValue();
+            for (ResourceModel.ParamModel param : resource.params()) {
+                if (param.source() == ResourceModel.ParamModel.Source.QUERY) {
+                    String name = param.sourceName();
+                    String type = param.typeName();
+                    String defaultValue = param.defaultValue();
                     params.add(new ParamInfo(name, type, defaultValue));
-                } else if (param.getSource() == Source.ENTITY) {
-                    String type = param.getType().getTypeName();
+                } else if (param.source() == ResourceModel.ParamModel.Source.ENTITY) {
+                    String type = param.typeName();
                     params.add(new ParamInfo("body", type));
                 }
             }

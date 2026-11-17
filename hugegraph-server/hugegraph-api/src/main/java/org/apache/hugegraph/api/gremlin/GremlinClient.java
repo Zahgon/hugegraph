@@ -17,14 +17,20 @@
 
 package org.apache.hugegraph.api.gremlin;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 import org.apache.hugegraph.api.filter.CompressInterceptor;
 import org.apache.hugegraph.util.E;
 
-import jakarta.ws.rs.client.Entity;
-import jakarta.ws.rs.client.WebTarget;
+import jakarta.ws.rs.ProcessingException;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.MultivaluedMap;
@@ -32,9 +38,9 @@ import jakarta.ws.rs.core.Response;
 
 /**
  * GremlinClient is a client for interacting with a Gremlin server.
- * It extends the AbstractJerseyRestClient and provides methods for sending GET and POST requests.
+ * It provides methods for sending GET and POST requests.
  */
-public class GremlinClient extends AbstractJerseyRestClient {
+public class GremlinClient extends AbstractGremlinRestClient {
 
     /**
      * Constructs a GremlinClient with the specified URL, timeout, maxTotal, and maxPerRoute.
@@ -56,12 +62,10 @@ public class GremlinClient extends AbstractJerseyRestClient {
      * @return The response from the server.
      */
     public Response doPostRequest(String auth, String req) {
-        Entity<?> body = Entity.entity(req, MediaType.APPLICATION_JSON);
-        return this.getWebTarget().request()
-                   .header(HttpHeaders.AUTHORIZATION, auth)
-                   .accept(MediaType.APPLICATION_JSON)
-                   .acceptEncoding(CompressInterceptor.GZIP)
-                   .post(body);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(this.url())
+                .POST(HttpRequest.BodyPublishers.ofString(req, StandardCharsets.UTF_8))
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON);
+        return decoded(this.send(headers(builder, auth)));
     }
 
     /**
@@ -72,17 +76,52 @@ public class GremlinClient extends AbstractJerseyRestClient {
      * @return The response from the server.
      */
     public Response doGetRequest(String auth, MultivaluedMap<String, String> params) {
-        WebTarget target = this.getWebTarget();
+        StringBuilder query = new StringBuilder();
         for (Map.Entry<String, List<String>> entry : params.entrySet()) {
             E.checkArgument(entry.getValue().size() == 1,
                             "Invalid query param '%s', can only accept one value, but got %s",
                             entry.getKey(), entry.getValue());
-            target = target.queryParam(entry.getKey(), entry.getValue().get(0));
+            query.append(query.length() == 0 ? '?' : '&')
+                 .append(URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8))
+                 .append('=')
+                 .append(URLEncoder.encode(entry.getValue().get(0), StandardCharsets.UTF_8));
         }
-        return target.request()
-                     .header(HttpHeaders.AUTHORIZATION, auth)
-                     .accept(MediaType.APPLICATION_JSON)
-                     .acceptEncoding(CompressInterceptor.GZIP)
-                     .get();
+        URI target = URI.create(this.url().toString() + query);
+        return decoded(this.send(headers(HttpRequest.newBuilder(target).GET(), auth)));
+    }
+
+    private static HttpRequest.Builder headers(HttpRequest.Builder builder, String auth) {
+        if (auth != null) {
+            builder.header(HttpHeaders.AUTHORIZATION, auth);
+        }
+        return builder.header(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON)
+                      .header(HttpHeaders.ACCEPT_ENCODING, CompressInterceptor.GZIP);
+    }
+
+    /** Unpacks an answer the gremlin server compressed, which the client asked it for. */
+    private static Response decoded(Response response) {
+        if (!CompressInterceptor.GZIP.equalsIgnoreCase(
+                response.getHeaderString(HttpHeaders.CONTENT_ENCODING))) {
+            return response;
+        }
+        Object entity = response.getEntity();
+        if (!(entity instanceof byte[])) {
+            return response;
+        }
+        try (GZIPInputStream input =
+                     new GZIPInputStream(new java.io.ByteArrayInputStream((byte[]) entity))) {
+            ByteArrayOutputStream unpacked = new ByteArrayOutputStream();
+            input.transferTo(unpacked);
+            Response.ResponseBuilder builder = Response.status(response.getStatus());
+            response.getMetadata().forEach((name, values) -> {
+                if (!HttpHeaders.CONTENT_ENCODING.equalsIgnoreCase(name) &&
+                    !HttpHeaders.CONTENT_LENGTH.equalsIgnoreCase(name)) {
+                    values.forEach(value -> builder.header(name, value));
+                }
+            });
+            return builder.entity(unpacked.toByteArray()).build();
+        } catch (IOException e) {
+            throw new ProcessingException(e);
+        }
     }
 }
